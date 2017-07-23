@@ -1,26 +1,23 @@
 package cmd
 
 import (
-	"fmt"
-
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
-
-	"strings"
-
-	"math"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
-	"sync/atomic"
-	"time"
 )
 
 type downloader struct {
@@ -33,9 +30,9 @@ type downloader struct {
 		blockSize int
 	}
 	result struct {
-		total int64
+		total   int64
 		success int64
-		failed int64
+		failed  int64
 	}
 }
 type blockData struct {
@@ -50,17 +47,17 @@ const tmpDir = ".coscli_tmp"
 
 // downloadCmd represents the download command
 var downloadCmd = &cobra.Command{
-	Use:   "download SOURCE [TARGET]",
+	Use:     "download SOURCE [TARGET]",
 	Aliases: []string{"down", "dw"},
-	Short: "download files",
+	Short:   "download files",
 	Long: `download fies.
 
 examples:
 
-  download /bucketName/path/to/object
-  download /bucketName/path/to/object  /path/to/local_file
-  download /bucketName/path/to/object  /path/to/local_dir/
-  download /bucketName/path/to/dir/  /path/to/local_dir/
+  download path/to/object
+  download path/to/object  /path/to/local_file
+  download path/to/object  /path/to/local_dir/
+  download path/to/dir/  /path/to/local_dir/
   download -b bucketName /path/to/object
 	`,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
@@ -121,7 +118,7 @@ examples:
 			&cos.BaseURL{BucketURL: cf.bucketURL},
 			&http.Client{
 				Transport: authTransport,
-				Timeout: time.Second * time.Duration(globalConfig.timeout),
+				Timeout:   time.Second * time.Duration(globalConfig.timeout),
 			},
 		)
 		ctx := context.Background()
@@ -131,7 +128,7 @@ examples:
 
 		if dw.config.isDir {
 			start := time.Now()
-			dw.downloadDir(ctx, cf.remote, cf.local)
+			dw.downloadDir(ctx, cf.remote, cf.local, globalConfig.maxKeys)
 			log.Printf("spend: %d seconds\n", time.Since(start)/time.Second)
 			log.Printf("total: %d\n", dw.result.total)
 			log.Printf("success: %d\n", dw.result.success)
@@ -156,13 +153,13 @@ func init() {
 }
 
 // 下载文件夹
-func (dw *downloader) downloadDir(ctx context.Context, remote_dir, local_dir string) (err error) {
+func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir string, maxKeys int) (err error) {
 	next := ""
 	var wg sync.WaitGroup
 	for {
 		opt := &cos.BucketGetOptions{
-			Prefix:  remote_dir,
-			MaxKeys: 10,
+			Prefix:  remoteDir,
+			MaxKeys: maxKeys,
 		}
 		if next != "" {
 			opt.Marker = next
@@ -180,7 +177,7 @@ func (dw *downloader) downloadDir(ctx context.Context, remote_dir, local_dir str
 			wg.Add(1)
 			atomic.AddInt64(&dw.result.total, 1)
 			size := o.Size
-			lp := getLocalDirPath(remote_dir, rp, local_dir)
+			lp := getLocalDirPath(remoteDir, rp, localDir)
 			go func(rp, lp string, size int) {
 				defer wg.Done()
 				if err = dw.downloadFile(ctx, rp, lp, size); err != nil {
@@ -200,49 +197,49 @@ func (dw *downloader) downloadDir(ctx context.Context, remote_dir, local_dir str
 
 // 下载文件
 func (dw *downloader) downloadFile(ctx context.Context,
-	remote_path, local_path string, fileSize int) (err error) {
-	local_path = getLocalFilePath(remote_path, local_path)
-	if err := mkPathDir(local_path); err != nil {
-		err = fmt.Errorf("mkdir directory for %s failed: %s", local_path, err)
+	remotePath, localPath string, fileSize int) (err error) {
+	localPath = getLocalFilePath(remotePath, localPath)
+	if err := mkPathDir(localPath); err != nil {
+		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
 		log.Println(err)
 		return err
 	}
-	log.Printf("download %s ==> %s start...", remote_path, local_path)
+	log.Printf("download %s ==> %s start...", remotePath, localPath)
 	blockSize := dw.config.blockSize
 
 	if fileSize == 0 {
-		log.Printf("get size of %s start...", remote_path)
+		log.Printf("get size of %s start...", remotePath)
 		// 获取文件大小
-		fileSize, err = dw.getFileSize(ctx, remote_path)
+		fileSize, err = dw.getFileSize(ctx, remotePath)
 		if err != nil {
-			log.Printf("get size of %s failed: %d", remote_path, err)
+			log.Printf("get size of %s failed: %s", remotePath, err)
 			return err
 		}
-		log.Printf("get size of %s success: %s", remote_path, fileSize)
+		log.Printf("get size of %s success: %d", remotePath, fileSize)
 	}
 	if fileSize <= blockSize {
-		return dw.downloadWhole(ctx, remote_path, local_path)
+		return dw.downloadWhole(ctx, remotePath, localPath)
 	}
 
 	// 分块并行下载
-	return dw.downloadBlocks(ctx, remote_path, local_path, blockSize, fileSize)
+	return dw.downloadBlocks(ctx, remotePath, localPath, blockSize, fileSize)
 }
 
 // 下载整个文件，不分块下载
-func (dw *downloader) downloadWhole(ctx context.Context, remote_path, local_path string) (err error) {
-	log.Printf("download %s ==> %s start...", remote_path, local_path)
-	local_path_tmp := getTmpFilePath(local_path, tmpDir)
-	if err := mkPathDir(local_path_tmp); err != nil {
-		err = fmt.Errorf("mkdir directory for %s failed: %s", local_path, err)
+func (dw *downloader) downloadWhole(ctx context.Context, remotePath, localPath string) (err error) {
+	log.Printf("download %s ==> %s start...", remotePath, localPath)
+	localPathTmp := getTmpFilePath(localPath, tmpDir)
+	if err := mkPathDir(localPathTmp); err != nil {
+		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
 		log.Println(err)
 		return err
 	}
 	client := dw.client
-	step0 := fmt.Sprintf("download %s ==> %s", remote_path, local_path_tmp)
+	step0 := fmt.Sprintf("download %s ==> %s", remotePath, localPathTmp)
 	log.Printf("%s start...", step0)
 
 	// 下载文件
-	resp, err := client.Object.Get(ctx, remote_path, nil)
+	resp, err := client.Object.Get(ctx, remotePath, nil)
 	if err != nil {
 		log.Printf("%s failed: %s", step0, err)
 		return
@@ -250,9 +247,9 @@ func (dw *downloader) downloadWhole(ctx context.Context, remote_path, local_path
 	defer resp.Body.Close()
 
 	// 把下载的数据保存到临时文件中
-	file, err := os.OpenFile(local_path_tmp, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
+	file, err := os.OpenFile(localPathTmp, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
 	if err != nil {
-		log.Printf("create file %s failed: %s", local_path_tmp, err)
+		log.Printf("create file %s failed: %s", localPathTmp, err)
 		return
 	}
 	defer file.Close()
@@ -260,29 +257,29 @@ func (dw *downloader) downloadWhole(ctx context.Context, remote_path, local_path
 	log.Printf("%s success", step0)
 
 	// 生成最终的文件
-	step2 := fmt.Sprintf("rename %s to %s", local_path_tmp, local_path)
+	step2 := fmt.Sprintf("rename %s to %s", localPathTmp, localPath)
 	log.Printf("%s start...", step2)
-	if err = os.Rename(local_path_tmp, local_path); err != nil {
+	if err = os.Rename(localPathTmp, localPath); err != nil {
 		log.Printf("%s failed: %s", step2, err)
 		return err
 	}
 	log.Printf("%s success", step2)
-	log.Printf("download %s ==> %s success", remote_path, local_path)
+	log.Printf("download %s ==> %s success", remotePath, localPath)
 	return
 }
 
 // 分块下载文件
-func (dw *downloader) downloadBlocks(ctx context.Context, remote_path, local_path string,
+func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath string,
 	blockSize, fileSize int) (err error) {
-	local_path_tmp := getTmpFilePath(local_path, tmpDir)
-	if err := mkPathDir(local_path_tmp); err != nil {
-		err = fmt.Errorf("mkdir directory for %s failed: %s", local_path, err)
+	localPathTmp := getTmpFilePath(localPath, tmpDir)
+	if err := mkPathDir(localPathTmp); err != nil {
+		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
 		log.Println(err)
 		return err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	// 分块大小
-	bsize := float64(blockSize * 1024 * 1024)
+	bsize := float64(blockSize)
 	// 分多少块
 	nblock := 1
 	if fileSize > int(bsize) {
@@ -292,22 +289,22 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remote_path, local_pat
 	dataBlocks := make([]blockData, nblock)
 	ret, cerr := make(chan blockData, nblock), make(chan error, nblock)
 
-	step0 := fmt.Sprintf("download %s ==> %s with %d blocks", remote_path, local_path, nblock)
+	step0 := fmt.Sprintf("download %s ==> %s with %d blocks", remotePath, localPath, nblock)
 	log.Printf("%s start...", step0)
 	// 分块下载
 	for i := 0; i < nblock; i++ {
 		go func(n int) {
-			block_path := fmt.Sprintf("%s.%d", local_path_tmp, n)
-			f, err := dw.downloadBlock(ctx, remote_path, block_path, n, int(bsize))
+			blockPath := fmt.Sprintf("%s.%d", localPathTmp, n)
+			f, err := dw.downloadBlock(ctx, remotePath, blockPath, n, int(bsize))
 			if err != nil {
-				log.Printf("download %s failed: %s", remote_path, err)
+				log.Printf("download %s failed: %s", remotePath, err)
 				cancel()
 				cerr <- err
 				return
 			}
 			ret <- blockData{
 				n:    n,
-				path: block_path,
+				path: blockPath,
 				f:    f,
 			}
 		}(i)
@@ -316,18 +313,18 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remote_path, local_pat
 		select {
 		case d := <-ret:
 			dataBlocks[d.n] = d
-		case e := <- cerr:
+		case e := <-cerr:
 			return e
 		}
 	}
 	// 合并分块
-	if err = dw.mergeBlocks(local_path_tmp, dataBlocks); err != nil {
+	if err = dw.mergeBlocks(localPathTmp, dataBlocks); err != nil {
 		return
 	}
 	// 生成最终的文件
-	step2 := fmt.Sprintf("rename %s to %s", local_path_tmp, local_path)
+	step2 := fmt.Sprintf("rename %s to %s", localPathTmp, localPath)
 	log.Printf("%s start...", step2)
-	if err = os.Rename(local_path_tmp, local_path); err != nil {
+	if err = os.Rename(localPathTmp, localPath); err != nil {
 		log.Printf("%s failed: %s", step2, err)
 		return err
 	}
@@ -337,17 +334,17 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remote_path, local_pat
 }
 
 // 合并下载的分块
-func (dw *downloader) mergeBlocks(local_path_tmp string, dataBlocks []blockData) error {
+func (dw *downloader) mergeBlocks(localPathTmp string, dataBlocks []blockData) error {
 	defer func() {
 		for _, block := range dataBlocks {
 			block.f.Close()
 		}
 	}()
 
-	log.Printf("merge blocks of %s start...", local_path_tmp)
-	file, err := os.OpenFile(local_path_tmp, os.O_CREATE|os.O_APPEND|os.O_WRONLY|os.O_TRUNC, fileMode)
+	log.Printf("merge blocks of %s start...", localPathTmp)
+	file, err := os.OpenFile(localPathTmp, os.O_CREATE|os.O_APPEND|os.O_WRONLY|os.O_TRUNC, fileMode)
 	if err != nil {
-		log.Printf("create file %s failed: %s", local_path_tmp, err)
+		log.Printf("create file %s failed: %s", localPathTmp, err)
 		return err
 	}
 
@@ -356,19 +353,19 @@ func (dw *downloader) mergeBlocks(local_path_tmp string, dataBlocks []blockData)
 		p := block.path
 		f.Seek(io.SeekStart, io.SeekStart)
 		if _, err = io.Copy(file, f); err != nil {
-			log.Printf("merge blocks %s of %s failed: %s", local_path_tmp, p, err)
+			log.Printf("merge blocks %s of %s failed: %s", localPathTmp, p, err)
 			return err
 		}
 	}
-	log.Printf("merge blocks of %s success", local_path_tmp)
+	log.Printf("merge blocks of %s success", localPathTmp)
 	return nil
 }
 
 // 下载文件的某块数据
 func (dw *downloader) downloadBlock(ctx context.Context,
-	remote_path, local_path string, n, bsize int) (f *os.File, err error) {
+	remotePath, localPath string, n, bsize int) (f *os.File, err error) {
 	client := dw.client
-	step := fmt.Sprintf("download %d block of %s ==> %s", n, remote_path, local_path)
+	step := fmt.Sprintf("download %d block of %s ==> %s", n, remotePath, localPath)
 	log.Printf("%s start...", step)
 
 	start := bsize * n
@@ -377,16 +374,16 @@ func (dw *downloader) downloadBlock(ctx context.Context,
 	opt := &cos.ObjectGetOptions{
 		Range: rg,
 	}
-	resp, err := client.Object.Get(ctx, remote_path, opt)
+	resp, err := client.Object.Get(ctx, remotePath, opt)
 	if err != nil {
 		log.Printf("%s failed: %s", step, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	file, err := os.OpenFile(local_path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
+	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
 	if err != nil {
-		log.Printf("create file %s failed: %s", local_path, err)
+		log.Printf("create file %s failed: %s", localPath, err)
 		return nil, err
 	}
 	io.Copy(file, resp.Body)
@@ -421,21 +418,21 @@ func mkPathDir(path string) error {
 }
 
 //
-func getLocalDirPath(remote_base, remote_path, local_dir string) string {
-	remote_path = strings.SplitN(remote_path, remote_base, 2)[1]
+func getLocalDirPath(remoteBase, remotePath, localDir string) string {
+	remotePath = strings.SplitN(remotePath, remoteBase, 2)[1]
 	return filepath.Join([]string{
-		local_dir, filepath.Dir(remote_path),
+		localDir, filepath.Dir(remotePath),
 	}...) + string(os.PathSeparator)
 }
 
 //
-func getLocalFilePath(remote_path, local_path string) string {
-	if local_path == "" {
-		local_path = getFileName(remote_path)
+func getLocalFilePath(remotePath, localPath string) string {
+	if localPath == "" {
+		localPath = getFileName(remotePath)
 	}
 
-	if isDir(local_path) || strings.HasSuffix(local_path, "/") {
-		local_path = filepath.Join([]string{local_path, getFileName(remote_path)}...)
+	if isDir(localPath) || strings.HasSuffix(localPath, "/") {
+		localPath = filepath.Join([]string{localPath, getFileName(remotePath)}...)
 	}
-	return local_path
+	return localPath
 }
