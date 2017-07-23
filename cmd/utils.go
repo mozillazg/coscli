@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -51,4 +52,9 @@ func isDir(path string) bool {
 		return true
 	}
 	return false
+}
+
+func exitWithError(err error) {
+	fmt.Println(err)
+	os.Exit(1)
 }
