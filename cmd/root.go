@@ -30,12 +30,14 @@ var globalConfig = struct {
 	bucketName   string
 	blockSize    int // 上传/下载的分块大小 (MB)
 	bucketURLTpl *template.Template
+	maxKeys      int // download/list 时遍历文件前缀的每次请求响应对象数
 }{
 	concurrency: 30,
 	timeout:     60,
 	verbose:     false,
 	serviceURL:  "https://service.cos.myqcloud.com",
-	blockSize:  50,
+	blockSize:   50,
+	maxKeys:     1000,
 }
 
 // RootCmd represents the base command when called without any subcommands
@@ -53,6 +55,7 @@ to quickly create a Cobra application.`,
 		globalConfig.secretKey = viper.GetString("secret_key")
 		globalConfig.bucketName = viper.GetString("bucket_name")
 		globalConfig.timeout = viper.GetInt("timeout")
+		globalConfig.maxKeys = viper.GetInt("max_keys")
 		globalConfig.blockSize = viper.GetInt("block_size")
 		globalConfig.bucketURL = viper.GetString("base_url.bucket")
 		globalConfig.bucketURLTpl = template.Must(
@@ -107,6 +110,9 @@ func init() {
 
 	RootCmd.PersistentFlags().BoolVarP(&globalConfig.verbose, "verbose", "v", globalConfig.verbose, "Verbose output")
 	viper.BindPFlag("verbose", RootCmd.PersistentFlags().Lookup("verbose"))
+
+	RootCmd.PersistentFlags().IntVar(&globalConfig.maxKeys, "max-keys", globalConfig.maxKeys, "max-keys")
+	viper.BindPFlag("max_keys", RootCmd.PersistentFlags().Lookup("max-keys"))
 }
 
 // initConfig reads in config file and ENV variables if set.
