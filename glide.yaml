@@ -1,7 +1,8 @@
 package: github.com/mozillazg/coscli
 import:
 - package: github.com/mitchellh/go-homedir
-- package: github.com/mozillazg/go-cos
-  version: ~0.5.0
+- package: github.com/olekukonko/tablewriter
 - package: github.com/spf13/cobra
 - package: github.com/spf13/viper
+- package: github.com/mozillazg/go-cos
+  version: ~0.6.0

@@ -7,11 +7,10 @@ package query
 
 import (
 	"fmt"
+	"github.com/pelletier/go-toml"
 	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/pelletier/go-toml"
 )
 
 // Lexer state function

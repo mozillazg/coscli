@@ -1,5 +1,5 @@
-hash: d1d37fd074aa615a1ffbefac104d4ccb090becefb8c02b3790928c458972b2cf
-updated: 2017-07-01T15:03:17.75760698+08:00
+hash: d040b4a969314e4b560064f8dca0a1f6fed654d771b13806154797c811f62c97
+updated: 2017-07-23T22:13:08.357199236+08:00
 imports:
 - name: github.com/fsnotify/fsnotify
   version: 4da3e2cfbabc9f751898f250b49f2439785783a1
@@ -21,15 +21,19 @@ imports:
 - name: github.com/inconshreveable/mousetrap
   version: 76626ae9c91c4f2a10f34cad8ce83ea42c93bb75
 - name: github.com/magiconair/properties
-  version: 51463bfca2576e06c62a8504b5c0f06d61312647
+  version: be5ece7dd465ab0765a9682137865547526d1dfb
+- name: github.com/mattn/go-runewidth
+  version: 97311d9f7767e3d6f422ea06661bc2c7a19e8a5d
 - name: github.com/mitchellh/go-homedir
   version: b8bc1bf767474819792c23f32d8286a45736f1c6
 - name: github.com/mitchellh/mapstructure
   version: d0303fe809921458f417bcf828397a65db30a7e4
 - name: github.com/mozillazg/go-cos
-  version: 000df3ad7fcc275cfd6905c65dc205ff34c4c537
+  version: cccb782a36fafccbda9f9e667d7098be1c8bd323
 - name: github.com/mozillazg/go-httpheader
   version: fcf1e196bc6f884f5e97d5084c83feb917e15b08
+- name: github.com/olekukonko/tablewriter
+  version: be5337e7b39e64e5f91445ce7e721888dbab7387
 - name: github.com/pelletier/go-toml
   version: 69d355db5304c0f7f809a2edc054553e7142f016
 - name: github.com/spf13/afero
@@ -39,22 +43,22 @@ imports:
 - name: github.com/spf13/cast
   version: acbeb36b902d72a7a4c18e8f3241075e7ab763e4
 - name: github.com/spf13/cobra
-  version: 8c6fa02d2225de0f9bdcb7ca912556f68d172d8c
+  version: f20b4e9c32bb3e9d44773ca208db814f24dcd21b
 - name: github.com/spf13/jwalterweatherman
   version: 0efa5202c04663c757d84f90f5219c1250baf94f
 - name: github.com/spf13/pflag
   version: e57e3eeb33f795204c1ca35f56c44f83227c6e66
 - name: github.com/spf13/viper
-  version: c1de95864d73a5465492829d7cb2dd422b19ac96
+  version: 25b30aa063fc18e48662b86996252eabdcf2f0c7
 - name: golang.org/x/sys
-  version: 4ed4d404df456f81e878683a0363ed3013a59003
+  version: c4489faa6e5ab84c0ef40d6ee878f7a030281f0f
   subpackages:
   - unix
 - name: golang.org/x/text
-  version: 2bf8f2a19ec09c670e931282edfe6567f6be21c9
+  version: 836efe42bb4aa16aaa17b9c155d8813d336ed720
   subpackages:
   - transform
   - unicode/norm
 - name: gopkg.in/yaml.v2
-  version: cd8b52f8269e0feb286dfeef29f8fe4d5b397e0b
+  version: 25c4ec802a7d637f88d584ab26798e94ad14c13b
 testImports: []

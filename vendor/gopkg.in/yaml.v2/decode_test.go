@@ -2,14 +2,13 @@ package yaml_test
 
 import (
 	"errors"
+	. "gopkg.in/check.v1"
+	"gopkg.in/yaml.v2"
 	"math"
 	"net"
 	"reflect"
 	"strings"
 	"time"
-
-	. "gopkg.in/check.v1"
-	"gopkg.in/yaml.v2"
 )
 
 var unmarshalIntTest = 123
@@ -159,13 +158,13 @@ var unmarshalTests = []struct {
 		map[string]interface{}{"seq": []interface{}{"A", "B"}},
 	}, {
 		"seq: [A,B,C,]",
-		map[string][]string{"seq": {"A", "B", "C"}},
+		map[string][]string{"seq": []string{"A", "B", "C"}},
 	}, {
 		"seq: [A,1,C]",
-		map[string][]string{"seq": {"A", "1", "C"}},
+		map[string][]string{"seq": []string{"A", "1", "C"}},
 	}, {
 		"seq: [A,1,C]",
-		map[string][]int{"seq": {1}},
+		map[string][]int{"seq": []int{1}},
 	}, {
 		"seq: [A,1,C]",
 		map[string]interface{}{"seq": []interface{}{"A", 1, "C"}},
@@ -176,13 +175,13 @@ var unmarshalTests = []struct {
 		map[string]interface{}{"seq": []interface{}{"A", "B"}},
 	}, {
 		"seq:\n - A\n - B\n - C",
-		map[string][]string{"seq": {"A", "B", "C"}},
+		map[string][]string{"seq": []string{"A", "B", "C"}},
 	}, {
 		"seq:\n - A\n - 1\n - C",
-		map[string][]string{"seq": {"A", "1", "C"}},
+		map[string][]string{"seq": []string{"A", "1", "C"}},
 	}, {
 		"seq:\n - A\n - 1\n - C",
-		map[string][]int{"seq": {1}},
+		map[string][]int{"seq": []int{1}},
 	}, {
 		"seq:\n - A\n - 1\n - C",
 		map[string]interface{}{"seq": []interface{}{"A", 1, "C"}},
@@ -391,7 +390,7 @@ var unmarshalTests = []struct {
 		map[interface{}]interface{}{"1": "\"2\""},
 	}, {
 		"v:\n- A\n- 'B\n\n  C'\n",
-		map[string][]string{"v": {"A", "B\nC"}},
+		map[string][]string{"v": []string{"A", "B\nC"}},
 	},
 
 	// Explicit tags.
@@ -404,6 +403,12 @@ var unmarshalTests = []struct {
 	}, {
 		"%TAG !y! tag:yaml.org,2002:\n---\nv: !y!int '1'",
 		map[string]interface{}{"v": 1},
+	},
+
+	// Non-specific tag (Issue #75)
+	{
+		"v: ! test",
+		map[string]interface{}{"v": "test"},
 	},
 
 	// Anchors and aliases.
@@ -605,7 +610,8 @@ type inlineC struct {
 }
 
 func (s *S) TestUnmarshal(c *C) {
-	for _, item := range unmarshalTests {
+	for i, item := range unmarshalTests {
+		c.Logf("test %d: %q", i, item.data)
 		t := reflect.ValueOf(item.value).Type()
 		var value interface{}
 		switch t.Kind() {
@@ -649,6 +655,7 @@ var unmarshalErrorTests = []struct {
 	{"a: !!binary ==", "yaml: !!binary value contains invalid base64 data"},
 	{"{[.]}", `yaml: invalid map key: \[\]interface \{\}\{"\."\}`},
 	{"{{.}}", `yaml: invalid map key: map\[interface\ \{\}\]interface \{\}\{".":interface \{\}\(nil\)\}`},
+	{"%TAG !%79! tag:yaml.org,2002:\n---\nv: !%79!int '1'", "yaml: did not find expected whitespace"},
 }
 
 func (s *S) TestUnmarshalErrors(c *C) {
@@ -967,6 +974,17 @@ func (s *S) TestUnmarshalSliceOnPreset(c *C) {
 	v := struct{ A []int }{[]int{1}}
 	yaml.Unmarshal([]byte("a: [2]"), &v)
 	c.Assert(v.A, DeepEquals, []int{2})
+}
+
+func (s *S) TestUnmarshalStrict(c *C) {
+	v := struct{ A, B int }{}
+
+	err := yaml.UnmarshalStrict([]byte("a: 1\nb: 2"), &v)
+	c.Check(err, IsNil)
+	err = yaml.Unmarshal([]byte("a: 1\nb: 2\nc: 3"), &v)
+	c.Check(err, IsNil)
+	err = yaml.UnmarshalStrict([]byte("a: 1\nb: 2\nc: 3"), &v)
+	c.Check(err, ErrorMatches, "yaml: unmarshal errors:\n  line 1: field c not found in struct struct { A int; B int }")
 }
 
 //var data []byte
