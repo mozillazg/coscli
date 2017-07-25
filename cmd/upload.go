@@ -1,25 +1,21 @@
 package cmd
 
 import (
-	"fmt"
-
+	"bytes"
 	"context"
 	"errors"
-	"log"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
-	"time"
-
-	"bytes"
-	"io"
 	"sync"
 	"sync/atomic"
-
-	"sort"
+	"time"
 
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
@@ -138,7 +134,7 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 			dirName = filepath.Dir(localPath)
 		}
 		rp := remotePath
-		if strings.HasSuffix(rp, "/") {
+		if rp == "" || strings.HasSuffix(rp, "/") {
 			p := strings.TrimLeft(strings.SplitN(path, dirName, 2)[1],
 				string(os.PathSeparator))
 			rp = rp + p
