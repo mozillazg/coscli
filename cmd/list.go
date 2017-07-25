@@ -8,8 +8,6 @@ import (
 	"net/url"
 	"time"
 
-	"log"
-
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
 )

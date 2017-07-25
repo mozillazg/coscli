@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
-	"sync"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"

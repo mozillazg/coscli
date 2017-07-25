@@ -9,10 +9,13 @@ import (
 
 	homedir "github.com/mitchellh/go-homedir"
 	"github.com/mozillazg/go-cos"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 )
 
+var log = logrus.New()
 var cfgFile string
 var authTransport http.RoundTripper
 
@@ -63,10 +66,21 @@ to quickly create a Cobra application.`,
 				globalConfig.bucketURL,
 			),
 		)
+		globalConfig.verbose = viper.GetBool("verbose")
 
 		authTransport = &cos.AuthorizationTransport{
 			SecretID:  globalConfig.secretID,
 			SecretKey: globalConfig.secretKey,
+		}
+
+		formatter := new(prefixed.TextFormatter)
+		formatter.FullTimestamp = true
+		//formatter.SetColorScheme(&prefixed.ColorScheme{
+		//	PrefixStyle:    "blue+b",
+		//})
+		log.Formatter = formatter
+		if globalConfig.verbose {
+			log.Level = logrus.DebugLevel
 		}
 	},
 }

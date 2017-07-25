@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mozillazg/go-cos"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -34,6 +34,7 @@ type downloader struct {
 		success int64
 		failed  int64
 	}
+	logger *logrus.Entry
 }
 type blockData struct {
 	n    int
@@ -48,7 +49,7 @@ const tmpDir = ".coscli_tmp"
 // downloadCmd represents the download command
 var downloadCmd = &cobra.Command{
 	Use:     "download SOURCE [TARGET]",
-	Aliases: []string{"down", "dw"},
+	Aliases: []string{"down", "dw", "get"},
 	Short:   "download files",
 	Long: `download fies.
 
@@ -121,6 +122,10 @@ examples:
 				Timeout:   time.Second * time.Duration(globalConfig.timeout),
 			},
 		)
+		dw.logger = log.WithFields(logrus.Fields{
+			"prefix": "download",
+		})
+		log := dw.logger
 		ctx := context.Background()
 		defer func() {
 			os.RemoveAll(tmpDir)
@@ -129,19 +134,19 @@ examples:
 		if dw.config.isDir {
 			start := time.Now()
 			dw.downloadDir(ctx, cf.remote, cf.local, globalConfig.maxKeys)
-			log.Printf("spend: %d seconds\n", time.Since(start)/time.Second)
-			log.Printf("total: %d\n", dw.result.total)
-			log.Printf("success: %d\n", dw.result.success)
-			log.Printf("failed: %d\n", dw.result.failed)
+			log.Infof("spend: %d seconds", time.Since(start)/time.Second)
+			log.Infof("total: %d", dw.result.total)
+			log.Infof("success: %d", dw.result.success)
+			log.Infof("failed: %d", dw.result.failed)
 
 			if dw.result.success != dw.result.total {
-				log.Printf("download %s failed", cf.remote)
+				log.Errorf("download %s failed", cf.remote)
 				os.Exit(1)
 			}
 			return
 		}
 		if err = dw.downloadFile(ctx, cf.remote, cf.local, 0); err != nil {
-			log.Printf("download %s failed: %s", cf.remote, err)
+			log.Errorf("download %s failed: %s", cf.remote, err)
 			os.Exit(1)
 		}
 		return
@@ -198,24 +203,25 @@ func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir strin
 // 下载文件
 func (dw *downloader) downloadFile(ctx context.Context,
 	remotePath, localPath string, fileSize int) (err error) {
+	log := dw.logger
 	localPath = getLocalFilePath(remotePath, localPath)
 	if err := mkPathDir(localPath); err != nil {
 		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
-		log.Println(err)
+		log.Error(err)
 		return err
 	}
 	log.Printf("download %s ==> %s start...", remotePath, localPath)
 	blockSize := dw.config.blockSize
 
 	if fileSize == 0 {
-		log.Printf("get size of %s start...", remotePath)
+		log.Debugf("get size of %s start...", remotePath)
 		// 获取文件大小
 		fileSize, err = dw.getFileSize(ctx, remotePath)
 		if err != nil {
-			log.Printf("get size of %s failed: %s", remotePath, err)
+			log.Errorf("get size of %s failed: %s", remotePath, err)
 			return err
 		}
-		log.Printf("get size of %s success: %d", remotePath, fileSize)
+		log.Debugf("get size of %s success: %d", remotePath, fileSize)
 	}
 	if fileSize <= blockSize {
 		return dw.downloadWhole(ctx, remotePath, localPath)
@@ -227,21 +233,22 @@ func (dw *downloader) downloadFile(ctx context.Context,
 
 // 下载整个文件，不分块下载
 func (dw *downloader) downloadWhole(ctx context.Context, remotePath, localPath string) (err error) {
-	log.Printf("download %s ==> %s start...", remotePath, localPath)
+	log := dw.logger
+	log.Infof("download %s ==> %s start...", remotePath, localPath)
 	localPathTmp := getTmpFilePath(localPath, tmpDir)
 	if err := mkPathDir(localPathTmp); err != nil {
 		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
-		log.Println(err)
+		log.Error(err)
 		return err
 	}
 	client := dw.client
 	step0 := fmt.Sprintf("download %s ==> %s", remotePath, localPathTmp)
-	log.Printf("%s start...", step0)
+	log.Debugf("%s start...", step0)
 
 	// 下载文件
 	resp, err := client.Object.Get(ctx, remotePath, nil)
 	if err != nil {
-		log.Printf("%s failed: %s", step0, err)
+		log.Errorf("%s failed: %s", step0, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -249,32 +256,33 @@ func (dw *downloader) downloadWhole(ctx context.Context, remotePath, localPath s
 	// 把下载的数据保存到临时文件中
 	file, err := os.OpenFile(localPathTmp, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
 	if err != nil {
-		log.Printf("create file %s failed: %s", localPathTmp, err)
+		log.Errorf("create file %s failed: %s", localPathTmp, err)
 		return
 	}
 	defer file.Close()
 	io.Copy(file, resp.Body)
-	log.Printf("%s success", step0)
+	log.Debugf("%s success", step0)
 
 	// 生成最终的文件
 	step2 := fmt.Sprintf("rename %s to %s", localPathTmp, localPath)
-	log.Printf("%s start...", step2)
+	log.Debugf("%s start...", step2)
 	if err = os.Rename(localPathTmp, localPath); err != nil {
-		log.Printf("%s failed: %s", step2, err)
+		log.Errorf("%s failed: %s", step2, err)
 		return err
 	}
-	log.Printf("%s success", step2)
-	log.Printf("download %s ==> %s success", remotePath, localPath)
+	log.Debugf("%s success", step2)
+	log.Infof("download %s ==> %s success", remotePath, localPath)
 	return
 }
 
 // 分块下载文件
 func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath string,
 	blockSize, fileSize int) (err error) {
+	log := dw.logger
 	localPathTmp := getTmpFilePath(localPath, tmpDir)
 	if err := mkPathDir(localPathTmp); err != nil {
 		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
-		log.Println(err)
+		log.Error(err)
 		return err
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -290,14 +298,14 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 	ret, cerr := make(chan blockData, nblock), make(chan error, nblock)
 
 	step0 := fmt.Sprintf("download %s ==> %s with %d blocks", remotePath, localPath, nblock)
-	log.Printf("%s start...", step0)
+	log.Debugf("%s start...", step0)
 	// 分块下载
 	for i := 0; i < nblock; i++ {
 		go func(n int) {
 			blockPath := fmt.Sprintf("%s.%d", localPathTmp, n)
 			f, err := dw.downloadBlock(ctx, remotePath, blockPath, n, int(bsize))
 			if err != nil {
-				log.Printf("download %s failed: %s", remotePath, err)
+				log.Errorf("download %s failed: %s", remotePath, err)
 				cancel()
 				cerr <- err
 				return
@@ -323,13 +331,13 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 	}
 	// 生成最终的文件
 	step2 := fmt.Sprintf("rename %s to %s", localPathTmp, localPath)
-	log.Printf("%s start...", step2)
+	log.Debugf("%s start...", step2)
 	if err = os.Rename(localPathTmp, localPath); err != nil {
-		log.Printf("%s failed: %s", step2, err)
+		log.Errorf("%s failed: %s", step2, err)
 		return err
 	}
-	log.Printf("%s success", step2)
-	log.Printf("%s success", step0)
+	log.Debugf("%s success", step2)
+	log.Infof("%s success", step0)
 	return
 }
 
@@ -340,11 +348,12 @@ func (dw *downloader) mergeBlocks(localPathTmp string, dataBlocks []blockData) e
 			block.f.Close()
 		}
 	}()
+	log := dw.logger
 
-	log.Printf("merge blocks of %s start...", localPathTmp)
+	log.Debugf("merge blocks of %s start...", localPathTmp)
 	file, err := os.OpenFile(localPathTmp, os.O_CREATE|os.O_APPEND|os.O_WRONLY|os.O_TRUNC, fileMode)
 	if err != nil {
-		log.Printf("create file %s failed: %s", localPathTmp, err)
+		log.Errorf("create file %s failed: %s", localPathTmp, err)
 		return err
 	}
 
@@ -353,11 +362,11 @@ func (dw *downloader) mergeBlocks(localPathTmp string, dataBlocks []blockData) e
 		p := block.path
 		f.Seek(io.SeekStart, io.SeekStart)
 		if _, err = io.Copy(file, f); err != nil {
-			log.Printf("merge blocks %s of %s failed: %s", localPathTmp, p, err)
+			log.Errorf("merge blocks %s of %s failed: %s", localPathTmp, p, err)
 			return err
 		}
 	}
-	log.Printf("merge blocks of %s success", localPathTmp)
+	log.Debugf("merge blocks of %s success", localPathTmp)
 	return nil
 }
 
@@ -365,8 +374,9 @@ func (dw *downloader) mergeBlocks(localPathTmp string, dataBlocks []blockData) e
 func (dw *downloader) downloadBlock(ctx context.Context,
 	remotePath, localPath string, n, bsize int) (f *os.File, err error) {
 	client := dw.client
+	log := dw.logger
 	step := fmt.Sprintf("download %d block of %s ==> %s", n, remotePath, localPath)
-	log.Printf("%s start...", step)
+	log.Debugf("%s start...", step)
 
 	start := bsize * n
 	end := bsize*(n+1) - 1
@@ -376,19 +386,19 @@ func (dw *downloader) downloadBlock(ctx context.Context,
 	}
 	resp, err := client.Object.Get(ctx, remotePath, opt)
 	if err != nil {
-		log.Printf("%s failed: %s", step, err)
+		log.Errorf("%s failed: %s", step, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
 	if err != nil {
-		log.Printf("create file %s failed: %s", localPath, err)
+		log.Errorf("create file %s failed: %s", localPath, err)
 		return nil, err
 	}
 	io.Copy(file, resp.Body)
 	f = file
-	log.Printf("%s success", step)
+	log.Debugf("%s success", step)
 	return
 }
 
