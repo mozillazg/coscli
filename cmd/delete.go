@@ -12,6 +12,7 @@ import (
 
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
+	"github.com/sirupsen/logrus"
 )
 
 type objectDeleter struct {
@@ -22,6 +23,7 @@ type objectDeleter struct {
 		maxKeys   int
 	}
 	client *cos.Client
+	logger *logrus.Entry
 }
 
 var od = new(objectDeleter)
@@ -64,18 +66,22 @@ var deleteCmd = &cobra.Command{
 		)
 		ctx := context.Background()
 		var err error
+		od.logger = log.WithFields(logrus.Fields{
+			"prefix": "delete",
+		})
+		log := od.logger
 		step := fmt.Sprintf("delete %s", cfg.path)
-		log.Printf("%s start...", step)
+		log.Infof("%s start...", step)
 		if cfg.isPrefix {
 			err = od.deleteByPrefix(ctx)
 		} else {
 			err = od.deleteObject(ctx)
 		}
 		if err != nil {
-			log.Printf("%s failed", step)
+			log.Errorf("%s failed", step)
 			exitWithError(err)
 		} else {
-			log.Printf("%s success", step)
+			log.Infof("%s success", step)
 		}
 
 	},
@@ -94,6 +100,7 @@ func (od *objectDeleter) deleteByPrefix(ctx context.Context) error {
 	wg := sync.WaitGroup{}
 	eMsg := []string{}
 	eLock := sync.Mutex{}
+	nothing := true
 	for {
 		opt := &cos.BucketGetOptions{
 			Prefix:  prefix,
@@ -105,6 +112,11 @@ func (od *objectDeleter) deleteByPrefix(ctx context.Context) error {
 		ret, _, err := client.Bucket.Get(ctx, opt)
 		if err != nil {
 			return err
+		}
+		if len(ret.Contents) == 0 {
+			break
+		} else {
+			nothing = false
 		}
 		wg.Add(1)
 		go func(rt *cos.BucketGetResult) {
@@ -122,11 +134,18 @@ func (od *objectDeleter) deleteByPrefix(ctx context.Context) error {
 		}
 	}
 	wg.Wait()
-	return errors.New(strings.Join(eMsg, "\n"))
+	if len(eMsg) > 0 {
+		return errors.New(strings.Join(eMsg, "\n"))
+	}
+	if nothing {
+		od.logger.Warning("Nothing!")
+	}
+	return nil
 }
 
 func (od *objectDeleter) BatchDelete(ctx context.Context, objects []cos.Object) error {
 	client := od.client
+	log := od.logger
 	obs := []cos.Object{}
 	for _, v := range objects {
 		obs = append(obs, cos.Object{Key: v.Key})
@@ -140,13 +159,16 @@ func (od *objectDeleter) BatchDelete(ctx context.Context, objects []cos.Object) 
 		return err
 	}
 	for _, o := range ret.DeletedObjects {
-		log.Printf("delete %s success", o.Key)
+		log.Infof("delete %s success", o.Key)
 	}
 	eMsg := []string{}
 	for _, e := range ret.Errors {
 		eMsg = append(eMsg, fmt.Sprintf("delete %s failed: %s", e.Key, e.Message))
 	}
-	return errors.New(strings.Join(eMsg, "\n"))
+	if len(eMsg) > 0 {
+		return errors.New(strings.Join(eMsg, "\n"))
+	}
+	return nil
 }
 
 func (od *objectDeleter) deleteObject(ctx context.Context) error {

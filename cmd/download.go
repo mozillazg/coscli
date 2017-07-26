@@ -210,7 +210,7 @@ func (dw *downloader) downloadFile(ctx context.Context,
 		log.Error(err)
 		return err
 	}
-	log.Printf("download %s ==> %s start...", remotePath, localPath)
+	log.Infof("download %s ==> %s start...", remotePath, localPath)
 	blockSize := dw.config.blockSize
 
 	if fileSize == 0 {

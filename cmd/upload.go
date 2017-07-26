@@ -19,6 +19,7 @@ import (
 
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
+	"github.com/sirupsen/logrus"
 )
 
 type uploader struct {
@@ -35,6 +36,7 @@ type uploader struct {
 		success int64
 		failed  int64
 	}
+	logger *logrus.Entry
 }
 
 var up = uploader{}
@@ -97,16 +99,20 @@ var uploadCmd = &cobra.Command{
 			},
 		)
 		ctx := context.Background()
+		up.logger = log.WithFields(logrus.Fields{
+			"prefix": "upload",
+		})
+		log := up.logger
 
 		start := time.Now()
-		up.upload(ctx, cf.local, cf.remote, cf.isDir)
-		log.Printf("spend: %d seconds\n", time.Since(start)/time.Second)
-		log.Printf("total: %d\n", up.result.total)
-		log.Printf("success: %d\n", up.result.success)
-		log.Printf("failed: %d\n", up.result.failed)
+		err := up.upload(ctx, cf.local, cf.remote, cf.isDir)
+		log.Infof("spend: %d seconds", time.Since(start)/time.Second)
+		log.Infof("total: %d", up.result.total)
+		log.Infof("success: %d", up.result.success)
+		log.Infof("failed: %d", up.result.failed)
 
 		if up.result.success != up.result.total {
-			log.Printf("upload %s failed", cf.local)
+			log.Infof("upload %s failed: %s", cf.local, err)
 			os.Exit(1)
 		}
 		return
@@ -120,6 +126,9 @@ func init() {
 
 func (up *uploader) upload(ctx context.Context, localPath, remotePath string, isDir bool) (err error) {
 	ws := sync.WaitGroup{}
+	log := up.logger
+	errMsg := []string{}
+	lock := sync.Mutex{}
 	err = filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -143,19 +152,30 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 		go func(l, r string) {
 			defer ws.Done()
 			step := fmt.Sprintf("upload %s -> %s", l, r)
-			log.Printf("%s start...", step)
+			log.Infof("%s start...", step)
 			e := up.uploadFile(ctx, l, r, int(info.Size()))
 			if e != nil {
 				atomic.AddInt64(&up.result.failed, 1)
-				log.Printf("%s failed: %s", step, e)
+				lock.Lock()
+				defer lock.Unlock()
+				msg := fmt.Sprintf("%s failed: %s", step, e)
+				log.Info(msg)
+				errMsg = append(errMsg, msg)
 				return
 			}
 			atomic.AddInt64(&up.result.success, 1)
-			log.Printf("%s success", step)
+			log.Infof("%s success", step)
 		}(path, rp)
 		return err
 	})
 	ws.Wait()
+	if len(errMsg) > 0 {
+		msg := strings.Join(errMsg, "\n")
+		if err != nil {
+			msg += fmt.Sprintf("%s", err)
+		}
+		err = errors.New(msg)
+	}
 	return err
 }
 
@@ -183,11 +203,12 @@ func (up *uploader) uploadFileWhole(ctx context.Context, f *os.File, remotePath 
 
 func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath string, size int) (err error) {
 	fileName := f.Name()
+	log := up.logger
 	step0 := fmt.Sprintf("blocks upload %s -> %s", fileName, remotePath)
-	log.Printf("%s start...", step0)
+	log.Debugf("%s start...", step0)
 	ret, _, err := up.client.Object.InitiateMultipartUpload(ctx, remotePath, nil)
 	if err != nil {
-		log.Printf("%s failed: %s", step0, err)
+		log.Errorf("%s failed: %s", step0, err)
 		return err
 	}
 	uploadID := ret.UploadID
@@ -209,7 +230,7 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 	cerr := make(chan error, nblock)
 
 	step1 := fmt.Sprintf("%s with %d blocks", step0, nblock)
-	log.Printf("%s start...", step1)
+	log.Debugf("%s start...", step1)
 	// 分块上传
 	for i := 1; i <= nblock; i++ {
 		s := bsize
@@ -222,7 +243,7 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 			break
 		}
 		if err != nil {
-			log.Printf("read the %d block of %s failed: %s", i, fileName, err)
+			log.Errorf("read the %d block of %s failed: %s", i, fileName, err)
 			cancel()
 			cerr <- err
 			break
@@ -230,15 +251,15 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 		block := bytes.NewReader(b)
 		go func(n int, block io.Reader) {
 			step := fmt.Sprintf("upload the %d block of %s -> %s", n, fileName, remotePath)
-			log.Printf("%s start...", step)
+			log.Debugf("%s start...", step)
 			etag, err := up.uploadFileBlock(ctx, block, uploadID, n, remotePath)
 			if err != nil {
-				log.Printf("%s error: %s", step, err)
+				log.Errorf("%s error: %s", step, err)
 				cancel()
 				cerr <- err
 				return
 			}
-			log.Printf("%s success", step)
+			log.Debugf("%s success", step)
 			dataBlock <- struct {
 				n    int
 				etag string
@@ -258,22 +279,22 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 			})
 		}
 	}
-	log.Printf("%s success", step1)
+	log.Debugf("%s success", step1)
 	// 按 PartNumber 排序
 	op := objectParts(opt.Parts)
 	sort.Sort(op)
 
 	step2 := fmt.Sprintf("%s, complete blocks", step0)
-	log.Printf("%s start...", step2)
+	log.Debugf("%s start...", step2)
 	_, _, err = up.client.Object.CompleteMultipartUpload(ctx, remotePath, uploadID, opt)
 
 	if err != nil {
-		log.Printf("%s failed: %s", step2, err)
-		log.Printf("%s failed: %s", step0, err)
+		log.Errorf("%s failed: %s", step2, err)
+		log.Errorf("%s failed: %s", step0, err)
 		return
 	}
-	log.Printf("%s success", step2)
-	log.Printf("%s success", step0)
+	log.Debugf("%s success", step2)
+	log.Debugf("%s success", step0)
 	return
 }
 
