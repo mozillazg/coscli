@@ -2,15 +2,18 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"text/template"
-	"math"
+
+	"github.com/mozillazg/go-cos"
 )
 
 type task struct {
@@ -27,7 +30,7 @@ type goroutinePool struct {
 func newGoroutinePool(maxWorkers, queueSize int) *goroutinePool {
 	p := &goroutinePool{
 		maxWorkers: maxWorkers,
-		queueSize: queueSize,
+		queueSize:  queueSize,
 		queue:      make(chan task, queueSize),
 	}
 	p.startWorkers()
@@ -110,7 +113,6 @@ func exitWithError(err error) {
 	os.Exit(1)
 }
 
-
 // 生成客户端 range header value 的值
 // blockSize: 每块大小
 // n: 第几块, n 从 0 开始
@@ -121,7 +123,7 @@ func calRange(blockSize, n int) string {
 }
 
 // 计算可以分多少块
-func calBlock(total, blockSize int ) int {
+func calBlock(total, blockSize int) int {
 	// 分块大小
 	bsize := float64(blockSize)
 	// 分多少块
@@ -130,4 +132,38 @@ func calBlock(total, blockSize int ) int {
 		nblock = int(math.Ceil(float64(total) / bsize))
 	}
 	return nblock
+}
+
+func getObjectsByPrefix(ctx context.Context, client *cos.Client, prefix string, maxKeys int,
+	cObjs chan<- cos.Object, cErrs chan<- error) {
+	next := ""
+	for {
+		opt := &cos.BucketGetOptions{
+			Prefix:  prefix,
+			MaxKeys: maxKeys,
+		}
+		if next != "" {
+			opt.Marker = next
+		}
+		ret, _, err := client.Bucket.Get(ctx, opt)
+		if err != nil {
+			close(cObjs)
+			cErrs <- err
+			close(cErrs)
+			return
+		}
+
+		// 文件列表
+		for _, o := range ret.Contents {
+			cObjs <- o
+		}
+
+		next = ret.NextMarker
+		if next == "" {
+			break
+		}
+	}
+	close(cObjs)
+	close(cErrs)
+	return
 }

@@ -33,13 +33,16 @@ type downloader struct {
 		failed  int64
 	}
 	logger *logrus.Entry
+	err chan error
 }
 type blockData struct {
 	n    int
 	path string
 }
 
-var dw = new(downloader)
+var dw = &downloader{
+	err: make(chan error, 1),
+}
 
 const tmpDir = ".coscli_tmp"
 
@@ -108,8 +111,11 @@ examples:
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
+		defer func() {
+			os.RemoveAll(tmpDir)
+		}()
+
 		cf := dw.config
-		var err error
 		fmt.Printf("bucketURL: %s\n", cf.bucketURL)
 		fmt.Printf("download %s ==> %s\n", cf.remote, cf.local)
 		dw.client = cos.NewClient(
@@ -124,26 +130,32 @@ examples:
 		})
 		log := dw.logger
 		ctx := context.Background()
-		defer func() {
-			os.RemoveAll(tmpDir)
-		}()
 
-		if dw.config.isDir {
-			start := time.Now()
-			dw.downloadDir(ctx, cf.remote, cf.local, globalConfig.maxKeys)
-			log.Infof("spend: %d seconds", time.Since(start)/time.Second)
-			log.Infof("total: %d", dw.result.total)
-			log.Infof("success: %d", dw.result.success)
-			log.Infof("failed: %d", dw.result.failed)
+		start := time.Now()
+		dw.download(ctx, cf.remote, cf.local, globalConfig.maxKeys)
+		log.Infof("spend: %d seconds", time.Since(start)/time.Second)
+		log.Infof("total: %d", dw.result.total)
+		log.Infof("success: %d", dw.result.success)
+		log.Infof("failed: %d", dw.result.failed)
 
-			if dw.result.success != dw.result.total {
-				log.Errorf("download %s failed", cf.remote)
-				os.Exit(1)
+		errs := []string{}
+		close(dw.err)
+		loop:
+		for {
+			select {
+			case err, ok := <- dw.err:
+				if !ok {
+					break loop
+				}
+				errs = append(errs, fmt.Sprint(err))
 			}
-			return
 		}
-		if err = dw.downloadFile(ctx, cf.remote, cf.local, 0); err != nil {
-			log.Errorf("download %s failed: %s", cf.remote, err)
+		for _, e := range(errs) {
+			log.Error(e)
+		}
+
+		if dw.result.success != dw.result.total {
+			log.Errorf("download %s failed", cf.remote)
 			os.Exit(1)
 		}
 		return
@@ -154,24 +166,26 @@ func init() {
 	RootCmd.AddCommand(downloadCmd)
 }
 
-// 下载目录
-func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir string, maxKeys int) (err error) {
-	next := ""
-	for {
-		opt := &cos.BucketGetOptions{
-			Prefix:  remoteDir,
-			MaxKeys: maxKeys,
+// 下载文件或目录
+func (dw *downloader) download(ctx context.Context, remotePath, localPath string, maxKeys int) (err error) {
+	cObjs := make(chan cos.Object, 1)
+	cErrs := make(chan error, 1)
+	if dw.config.isDir {
+		go getObjectsByPrefix(ctx, dw.client, remotePath, maxKeys, cObjs, cErrs)
+	} else {
+		cObjs <- cos.Object{
+			Key: remotePath,
 		}
-		if next != "" {
-			opt.Marker = next
-		}
-		ret, _, err := dw.client.Bucket.Get(ctx, opt)
-		if err != nil {
-			return err
-		}
+		close(cObjs)
+	}
 
-		// 下载文件列表
-		for _, o := range ret.Contents {
+	loop:
+	for {
+		select {
+		case o, ok := <- cObjs:
+			if !ok {
+				break loop
+			}
 			rp := o.Key
 			// 不能下载目录
 			if strings.HasSuffix(rp, "/") {
@@ -180,32 +194,37 @@ func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir strin
 
 			atomic.AddInt64(&dw.result.total, 1)
 			size := o.Size
-			lp := getLocalDirPath(remoteDir, rp, localDir)
+			rbase := ""
+			if dw.config.isDir {
+				rbase = remotePath
+			}
+			//lp := getLocalDirPath(remotePath, rp, localPath)
 			// 提交到消费者队列
 			grPool.submit(func() {
-				if err = dw.downloadFile(ctx, rp, lp, size); err != nil {
+				if err = dw.downloadFile(ctx, rbase, rp, localPath, size); err != nil {
+					dw.err <- err
 					atomic.AddInt64(&dw.result.failed, 1)
 				} else {
 					atomic.AddInt64(&dw.result.success, 1)
 				}
 			})
-		}
-
-		next = ret.NextMarker
-		if next == "" {
-			break
+		case err, _ = <- cErrs:
+			break loop
 		}
 	}
 	// 等待消费完成
 	grPool.join()
+	if err != nil {
+		dw.err <- err
+	}
 	return
 }
 
 // 下载文件
 func (dw *downloader) downloadFile(ctx context.Context,
-	remotePath, localPath string, fileSize int) (err error) {
+	remoteBase, remotePath, localPath string, fileSize int) (err error) {
 	log := dw.logger
-	localPath = getLocalFilePath(remotePath, localPath)
+	localPath = getLocalFilePath(remoteBase, remotePath, localPath)
 	if err := mkPathDir(localPath); err != nil {
 		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
 		log.Error(err)
@@ -227,9 +246,6 @@ func (dw *downloader) downloadFile(ctx context.Context,
 
 	// 分块并行下载
 	err = dw.downloadBlocks(ctx, remotePath, localPath, blockSize, fileSize)
-	if !dw.config.isDir {
-		grPool.join()
-	}
 	return
 }
 
@@ -413,13 +429,18 @@ func getLocalDirPath(remoteBase, remotePath, localDir string) string {
 }
 
 //
-func getLocalFilePath(remotePath, localPath string) string {
+func getLocalFilePath(remoteBase, remotePath, localPath string) string {
 	if localPath == "" {
 		localPath = getFileName(remotePath)
 	}
+	// 除去 remoteBase 外的文件路径
+	remotePath = strings.SplitN(remotePath, remoteBase, 2)[1]
 
+	// 按原有目录结构保存到本地
 	if isDir(localPath) || strings.HasSuffix(localPath, "/") {
-		localPath = filepath.Join([]string{localPath, getFileName(remotePath)}...)
+		localPath = filepath.Join([]string{
+			localPath, filepath.Dir(remotePath), getFileName(remotePath),
+		}...)
 	}
 	return localPath
 }
