@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,7 +37,6 @@ type downloader struct {
 type blockData struct {
 	n    int
 	path string
-	f    *os.File
 }
 
 var dw = new(downloader)
@@ -118,7 +116,7 @@ examples:
 			&cos.BaseURL{BucketURL: cf.bucketURL},
 			&http.Client{
 				Transport: authTransport,
-				Timeout:   time.Second * time.Duration(globalConfig.timeout),
+				//Timeout:   time.Second * time.Duration(globalConfig.timeout),
 			},
 		)
 		dw.logger = log.WithFields(logrus.Fields{
@@ -171,12 +169,15 @@ func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir strin
 		if err != nil {
 			return err
 		}
-		next = ret.NextMarker
+
+		// 下载文件列表
 		for _, o := range ret.Contents {
 			rp := o.Key
+			// 不能下载目录
 			if strings.HasSuffix(rp, "/") {
 				continue
 			}
+
 			atomic.AddInt64(&dw.result.total, 1)
 			size := o.Size
 			lp := getLocalDirPath(remoteDir, rp, localDir)
@@ -189,6 +190,8 @@ func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir strin
 				}
 			})
 		}
+
+		next = ret.NextMarker
 		if next == "" {
 			break
 		}
@@ -211,9 +214,9 @@ func (dw *downloader) downloadFile(ctx context.Context,
 	log.Infof("download %s ==> %s start...", remotePath, localPath)
 	blockSize := dw.config.blockSize
 
+	// 获取文件大小
 	if fileSize == 0 {
 		log.Debugf("get size of %s start...", remotePath)
-		// 获取文件大小
 		fileSize, err = dw.getFileSize(ctx, remotePath)
 		if err != nil {
 			log.Errorf("get size of %s failed: %s", remotePath, err)
@@ -221,59 +224,12 @@ func (dw *downloader) downloadFile(ctx context.Context,
 		}
 		log.Debugf("get size of %s success: %d", remotePath, fileSize)
 	}
-	if fileSize <= blockSize {
-		err = dw.downloadWhole(ctx, remotePath, localPath)
-	} else {
-		// 分块并行下载
-		err = dw.downloadBlocks(ctx, remotePath, localPath, blockSize, fileSize)
-	}
+
+	// 分块并行下载
+	err = dw.downloadBlocks(ctx, remotePath, localPath, blockSize, fileSize)
 	if !dw.config.isDir {
 		grPool.join()
 	}
-	return
-}
-
-// 下载整个文件，不分块下载
-func (dw *downloader) downloadWhole(ctx context.Context, remotePath, localPath string) (err error) {
-	log := dw.logger
-	log.Infof("download %s ==> %s start...", remotePath, localPath)
-	localPathTmp := getTmpFilePath(localPath, tmpDir)
-	if err := mkPathDir(localPathTmp); err != nil {
-		err = fmt.Errorf("mkdir directory for %s failed: %s", localPath, err)
-		log.Error(err)
-		return err
-	}
-	client := dw.client
-	step0 := fmt.Sprintf("download %s ==> %s", remotePath, localPathTmp)
-	log.Debugf("%s start...", step0)
-
-	// 下载文件
-	resp, err := client.Object.Get(ctx, remotePath, nil)
-	if err != nil {
-		log.Errorf("%s failed: %s", step0, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	// 把下载的数据保存到临时文件中
-	file, err := os.OpenFile(localPathTmp, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
-	if err != nil {
-		log.Errorf("create file %s failed: %s", localPathTmp, err)
-		return
-	}
-	defer file.Close()
-	io.Copy(file, resp.Body)
-	log.Debugf("%s success", step0)
-
-	// 生成最终的文件
-	step2 := fmt.Sprintf("rename %s to %s", localPathTmp, localPath)
-	log.Debugf("%s start...", step2)
-	if err = os.Rename(localPathTmp, localPath); err != nil {
-		log.Errorf("%s failed: %s", step2, err)
-		return err
-	}
-	log.Debugf("%s success", step2)
-	log.Infof("download %s ==> %s success", remotePath, localPath)
 	return
 }
 
@@ -287,14 +243,10 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 		log.Error(err)
 		return err
 	}
+
 	ctx, cancel := context.WithCancel(ctx)
-	// 分块大小
-	bsize := float64(blockSize)
 	// 分多少块
-	nblock := 1
-	if fileSize > int(bsize) {
-		nblock = int(math.Ceil(float64(fileSize) / bsize))
-	}
+	nblock := calBlock(fileSize, blockSize)
 	// 用于保存分块数据
 	dataBlocks := make([]blockData, nblock)
 	ret, cerr := make(chan blockData, nblock), make(chan error, nblock)
@@ -307,7 +259,7 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 		n := i
 		gp.submit(func() {
 			blockPath := fmt.Sprintf("%s.%d", localPathTmp, n)
-			f, err := dw.downloadBlock(ctx, remotePath, blockPath, n, int(bsize))
+			err := dw.downloadBlock(ctx, remotePath, blockPath, n, blockSize)
 			if err != nil {
 				log.Errorf("download %s failed: %s", remotePath, err)
 				cancel()
@@ -317,7 +269,6 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 			ret <- blockData{
 				n:    n,
 				path: blockPath,
-				f:    f,
 			}
 		})
 	}
@@ -348,28 +299,35 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 
 // 合并下载的分块
 func (dw *downloader) mergeBlocks(localPathTmp string, dataBlocks []blockData) error {
-	defer func() {
-		for _, block := range dataBlocks {
-			block.f.Close()
-		}
-	}()
 	log := dw.logger
-
 	log.Debugf("merge blocks of %s start...", localPathTmp)
-	file, err := os.OpenFile(localPathTmp, os.O_CREATE|os.O_APPEND|os.O_WRONLY|os.O_TRUNC, fileMode)
+	distFile, err := os.OpenFile(localPathTmp, os.O_CREATE|os.O_APPEND|os.O_WRONLY|os.O_TRUNC, fileMode)
 	if err != nil {
 		log.Errorf("create file %s failed: %s", localPathTmp, err)
 		return err
 	}
+	defer func() {
+		distFile.Sync()
+		distFile.Close()
+	}()
 
+	// 按顺序合并下载的各个分块文件
 	for _, block := range dataBlocks {
-		f := block.f
+		// 打开分块文件
 		p := block.path
-		f.Seek(io.SeekStart, io.SeekStart)
-		if _, err = io.Copy(file, f); err != nil {
-			log.Errorf("merge blocks %s of %s failed: %s", localPathTmp, p, err)
+		f, err := os.OpenFile(p, os.O_RDONLY, fileMode)
+		if err != nil {
+			log.Errorf("open file %s failed: %s", p, err)
 			return err
 		}
+		// 合并文件内容
+		if _, err = io.Copy(distFile, f); err != nil {
+			log.Errorf("merge blocks %s of %s failed: %s", localPathTmp, p, err)
+			f.Close()
+			return err
+		}
+		f.Close()
+		os.Remove(p)
 	}
 	log.Debugf("merge blocks of %s success", localPathTmp)
 	return nil
@@ -377,32 +335,46 @@ func (dw *downloader) mergeBlocks(localPathTmp string, dataBlocks []blockData) e
 
 // 下载文件的某块数据
 func (dw *downloader) downloadBlock(ctx context.Context,
-	remotePath, localPath string, n, bsize int) (f *os.File, err error) {
+	remotePath, localPath string, n, bsize int) (err error) {
 	client := dw.client
 	log := dw.logger
-	step := fmt.Sprintf("download %d block of %s ==> %s", n, remotePath, localPath)
+	step := fmt.Sprintf("download the %d block of %s ==> %s", n, remotePath, localPath)
 	log.Debugf("%s start...", step)
 
-	start := bsize * n
-	end := bsize*(n+1) - 1
-	rg := fmt.Sprintf("bytes=%d-%d", start, end)
+	// 通过 range 分块下载
 	opt := &cos.ObjectGetOptions{
-		Range: rg,
+		Range: calRange(bsize, n),
 	}
 	resp, err := client.Object.Get(ctx, remotePath, opt)
 	if err != nil {
 		log.Errorf("%s failed: %s", step, err)
-		return nil, err
+		return
 	}
+	total := resp.ContentLength
 	defer resp.Body.Close()
 
-	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
+	// 保存 body 内容
+	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fileMode)
 	if err != nil {
 		log.Errorf("create file %s failed: %s", localPath, err)
-		return nil, err
+		return
 	}
-	io.Copy(file, resp.Body)
-	f = file
+	defer func() {
+		file.Sync()
+		file.Close()
+	}()
+	written, err := io.Copy(file, resp.Body)
+	if err != nil {
+		log.Errorf("%s failed: %s", step, err)
+		return
+	}
+	// 判断 body 内容是否读取完全
+	if written != total {
+		err = errors.New(
+			fmt.Sprintf("%s failed: written(%d) != total(%d)",
+				step, written, total),
+		)
+	}
 	log.Debugf("%s success", step)
 	return
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"math"
 )
 
 type task struct {
@@ -107,4 +108,26 @@ func isDir(path string) bool {
 func exitWithError(err error) {
 	fmt.Println(err)
 	os.Exit(1)
+}
+
+
+// 生成客户端 range header value 的值
+// blockSize: 每块大小
+// n: 第几块, n 从 0 开始
+func calRange(blockSize, n int) string {
+	start := blockSize * n
+	end := blockSize*(n+1) - 1
+	return fmt.Sprintf("bytes=%d-%d", start, end)
+}
+
+// 计算可以分多少块
+func calBlock(total, blockSize int ) int {
+	// 分块大小
+	bsize := float64(blockSize)
+	// 分多少块
+	nblock := 1
+	if total > int(bsize) {
+		nblock = int(math.Ceil(float64(total) / bsize))
+	}
+	return nblock
 }

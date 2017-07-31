@@ -10,6 +10,7 @@ import (
 
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
+	"strings"
 )
 
 var listConfig = struct {
@@ -93,7 +94,9 @@ func listObjects(ctx context.Context, client *cos.Client, prefix string, maxKeys
 
 func formatObjectList(objects []cos.Object) {
 	for _, ob := range objects {
-		fmt.Printf("%s  %d  %s  %s\n", ob.Key, ob.Size, ob.LastModified, ob.StorageClass)
+		fmt.Printf("%s  %d  %s  %s  %s\n", ob.Key, ob.Size,
+			strings.Trim(ob.ETag, "\""),
+			ob.LastModified, ob.StorageClass)
 	}
 	return
 }

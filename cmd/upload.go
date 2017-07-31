@@ -95,7 +95,7 @@ var uploadCmd = &cobra.Command{
 			&cos.BaseURL{BucketURL: cf.bucketURL},
 			&http.Client{
 				Transport: authTransport,
-				Timeout:   time.Second * time.Duration(globalConfig.timeout),
+				//Timeout:   time.Second * time.Duration(globalConfig.timeout),
 			},
 		)
 		ctx := context.Background()
