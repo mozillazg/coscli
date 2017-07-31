@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 // TestGoldenAddCmd initializes the project "github.com/spf13/testproject"
@@ -20,6 +22,13 @@ func TestGoldenAddCmd(t *testing.T) {
 	// Initialize the project at first.
 	initializeProject(project)
 	defer os.RemoveAll(project.AbsPath())
+
+	viper.Set("author", "NAME HERE <EMAIL ADDRESS>")
+	viper.Set("license", "apache")
+	viper.Set("year", 2017)
+	defer viper.Set("author", nil)
+	defer viper.Set("license", nil)
+	defer viper.Set("year", nil)
 
 	// Then add the "test" command.
 	cmdName := "test"
@@ -48,7 +57,7 @@ func TestGoldenAddCmd(t *testing.T) {
 		goldenPath := filepath.Join("testdata", filepath.Base(path)+".golden")
 
 		switch relPath {
-		// Know directories.
+		// Known directories.
 		case ".":
 			return nil
 		// Known files.

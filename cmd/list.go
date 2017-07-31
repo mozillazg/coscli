@@ -8,9 +8,10 @@ import (
 	"net/url"
 	"time"
 
+	"strings"
+
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
-	"strings"
 )
 
 var listConfig = struct {

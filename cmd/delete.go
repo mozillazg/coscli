@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/mozillazg/go-cos"
-	"github.com/spf13/cobra"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
 )
 
 type objectDeleter struct {

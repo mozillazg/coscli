@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/mozillazg/go-cos"
-	"github.com/spf13/cobra"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
 )
@@ -39,7 +39,7 @@ type uploader struct {
 		failed  int64
 	}
 	logger *logrus.Entry
-	pb *mpb.Progress
+	pb     *mpb.Progress
 }
 
 var up = uploader{}
@@ -155,7 +155,7 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 		rp = cleanCosPath(rp)
 		lp := path
 
-		grPool.submit(func(){
+		grPool.submit(func() {
 			step := fmt.Sprintf("upload %s -> %s", lp, rp)
 			log.Debugf("%s start...", step)
 			e := up.uploadFile(ctx, lp, rp, int(info.Size()))
@@ -211,7 +211,7 @@ func (up *uploader) uploadFile(ctx context.Context, localPath, remotePath string
 }
 
 func (up *uploader) uploadFileWhole(ctx context.Context, f *os.File,
-remotePath string, size int, bar *mpb.Bar) (err error) {
+	remotePath string, size int, bar *mpb.Bar) (err error) {
 	opt := &cos.ObjectPutOptions{
 		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
 			ContentLength: size,
@@ -223,7 +223,7 @@ remotePath string, size int, bar *mpb.Bar) (err error) {
 }
 
 func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File,
-remotePath string, size int, bar *mpb.Bar) (err error) {
+	remotePath string, size int, bar *mpb.Bar) (err error) {
 	fileName := f.Name()
 	log := up.logger
 	step0 := fmt.Sprintf("blocks upload %s -> %s", fileName, remotePath)

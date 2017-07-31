@@ -10,3 +10,6 @@ import:
   version: ~1.0.2
 - package: github.com/x-cray/logrus-prefixed-formatter
   version: ~0.5.0
+- package: github.com/vbauerster/mpb
+  subpackages:
+  - decor

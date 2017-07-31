@@ -35,8 +35,8 @@ type downloader struct {
 		failed  int64
 	}
 	logger *logrus.Entry
-	err chan error
-	pb *mpb.Progress
+	err    chan error
+	pb     *mpb.Progress
 }
 type blockData struct {
 	n    int
@@ -146,17 +146,17 @@ examples:
 
 		errs := []string{}
 		close(dw.err)
-		loop:
+	loop:
 		for {
 			select {
-			case err, ok := <- dw.err:
+			case err, ok := <-dw.err:
 				if !ok {
 					break loop
 				}
 				errs = append(errs, fmt.Sprint(err))
 			}
 		}
-		for _, e := range(errs) {
+		for _, e := range errs {
 			log.Error(e)
 		}
 
@@ -185,10 +185,10 @@ func (dw *downloader) download(ctx context.Context, remotePath, localPath string
 		close(cObjs)
 	}
 
-	loop:
+loop:
 	for {
 		select {
-		case o, ok := <- cObjs:
+		case o, ok := <-cObjs:
 			if !ok {
 				break loop
 			}
@@ -214,7 +214,7 @@ func (dw *downloader) download(ctx context.Context, remotePath, localPath string
 					atomic.AddInt64(&dw.result.success, 1)
 				}
 			})
-		case err, _ = <- cErrs:
+		case err, _ = <-cErrs:
 			break loop
 		}
 	}

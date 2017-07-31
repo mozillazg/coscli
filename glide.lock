@@ -1,5 +1,5 @@
-hash: 44b9f32ac2760a8cb197089f4d73e544d1a8ebedd6237111d7eecaa51372d62d
-updated: 2017-07-25T22:58:56.313569538+08:00
+hash: 8c1e10c9ebfb57f164c43b9bc5264a4155d24088b3e2689eaee698634f8a0bef
+updated: 2017-07-31T22:44:52.963115007+08:00
 imports:
 - name: github.com/fsnotify/fsnotify
   version: 4da3e2cfbabc9f751898f250b49f2439785783a1
@@ -23,7 +23,7 @@ imports:
 - name: github.com/magiconair/properties
   version: be5ece7dd465ab0765a9682137865547526d1dfb
 - name: github.com/mattn/go-colorable
-  version: 3fa8c76f9daed4067e4a806fb7e4dc86455c6d6a
+  version: 040dd0b833b34b4182673409ada4df2853b26537
 - name: github.com/mattn/go-isatty
   version: fc9e8d8ef48496124e79ae0df75490096eccf6fe
 - name: github.com/mattn/go-runewidth
@@ -51,21 +51,30 @@ imports:
 - name: github.com/spf13/cast
   version: acbeb36b902d72a7a4c18e8f3241075e7ab763e4
 - name: github.com/spf13/cobra
-  version: 34594c771f2c18301dc152640ad40ece28795373
+  version: 3da102d464b7d49ad9be566635716ac947fb3f99
 - name: github.com/spf13/jwalterweatherman
   version: 0efa5202c04663c757d84f90f5219c1250baf94f
 - name: github.com/spf13/pflag
   version: e57e3eeb33f795204c1ca35f56c44f83227c6e66
 - name: github.com/spf13/viper
   version: 25b30aa063fc18e48662b86996252eabdcf2f0c7
+- name: github.com/vbauerster/mpb
+  version: 6eaf1d37208615a84bae7f98742fe21a34523138
+  subpackages:
+  - cwriter
+  - decor
 - name: github.com/x-cray/logrus-prefixed-formatter
-  version: 0b2c791a02f18788b281dc30e243a0632dad695b
+  version: bb2702d423886830dee131692131d35648c382e2
+- name: golang.org/x/crypto
+  version: 558b6879de74bc843225cde5686419267ff707ca
+  subpackages:
+  - ssh/terminal
 - name: golang.org/x/sys
-  version: 85d149506305e7abe0aca5ad5ac4b1fce82ccd11
+  version: 0f826bdd13b500be0f1d4004938ad978fcc6031e
   subpackages:
   - unix
 - name: golang.org/x/text
-  version: 836efe42bb4aa16aaa17b9c155d8813d336ed720
+  version: 3bd178b88a8180be2df394a1fbb81313916f0e7b
   subpackages:
   - transform
   - unicode/norm
