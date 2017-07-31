@@ -97,7 +97,6 @@ func (od *objectDeleter) deleteByPrefix(ctx context.Context) error {
 	prefix := od.config.path
 	maxKeys := od.config.maxKeys
 	client := od.client
-	wg := sync.WaitGroup{}
 	eMsg := []string{}
 	eLock := sync.Mutex{}
 	nothing := true
@@ -113,27 +112,32 @@ func (od *objectDeleter) deleteByPrefix(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// 没有符合条件的 objects
 		if len(ret.Contents) == 0 {
 			break
 		} else {
 			nothing = false
 		}
-		wg.Add(1)
-		go func(rt *cos.BucketGetResult) {
-			defer wg.Done()
-			e := od.BatchDelete(ctx, rt.Contents)
+
+		// 放到 pool 消费者队列中
+		grPool.submit(func() {
+			e := od.BatchDelete(ctx, ret.Contents)
 			if e != nil {
 				eLock.Lock()
 				defer eLock.Unlock()
 				eMsg = append(eMsg, fmt.Sprint(e))
 			}
-		}(ret)
+		})
+
 		next = ret.NextMarker
+		// 没有下一页了
 		if next == "" {
 			break
 		}
 	}
-	wg.Wait()
+	// 等待消费者消费完成
+	grPool.join()
+
 	if len(eMsg) > 0 {
 		return errors.New(strings.Join(eMsg, "\n"))
 	}
@@ -158,6 +162,7 @@ func (od *objectDeleter) BatchDelete(ctx context.Context, objects []cos.Object) 
 	if err != nil {
 		return err
 	}
+
 	for _, o := range ret.DeletedObjects {
 		log.Infof("delete %s success", o.Key)
 	}

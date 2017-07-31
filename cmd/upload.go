@@ -125,7 +125,6 @@ func init() {
 }
 
 func (up *uploader) upload(ctx context.Context, localPath, remotePath string, isDir bool) (err error) {
-	ws := sync.WaitGroup{}
 	log := up.logger
 	errMsg := []string{}
 	lock := sync.Mutex{}
@@ -137,7 +136,6 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 			return nil
 		}
 		atomic.AddInt64(&up.result.total, 1)
-		ws.Add(1)
 		dirName := localPath
 		if !isDir {
 			dirName = filepath.Dir(localPath)
@@ -149,11 +147,11 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 			rp = rp + p
 		}
 		rp = cleanCosPath(rp)
-		go func(l, r string) {
-			defer ws.Done()
-			step := fmt.Sprintf("upload %s -> %s", l, r)
+		lp := path
+		grPool.submit(func(){
+			step := fmt.Sprintf("upload %s -> %s", lp, rp)
 			log.Infof("%s start...", step)
-			e := up.uploadFile(ctx, l, r, int(info.Size()))
+			e := up.uploadFile(ctx, lp, rp, int(info.Size()))
 			if e != nil {
 				atomic.AddInt64(&up.result.failed, 1)
 				lock.Lock()
@@ -165,10 +163,11 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 			}
 			atomic.AddInt64(&up.result.success, 1)
 			log.Infof("%s success", step)
-		}(path, rp)
+		})
 		return err
 	})
-	ws.Wait()
+	grPool.join()
+
 	if len(errMsg) > 0 {
 		msg := strings.Join(errMsg, "\n")
 		if err != nil {
@@ -231,6 +230,7 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 
 	step1 := fmt.Sprintf("%s with %d blocks", step0, nblock)
 	log.Debugf("%s start...", step1)
+	gp := grPool.clone()
 	// 分块上传
 	for i := 1; i <= nblock; i++ {
 		s := bsize
@@ -249,7 +249,8 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 			break
 		}
 		block := bytes.NewReader(b)
-		go func(n int, block io.Reader) {
+		n := i
+		gp.submit(func() {
 			step := fmt.Sprintf("upload the %d block of %s -> %s", n, fileName, remotePath)
 			log.Debugf("%s start...", step)
 			etag, err := up.uploadFileBlock(ctx, block, uploadID, n, remotePath)
@@ -264,7 +265,7 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 				n    int
 				etag string
 			}{n, etag}
-		}(i, block)
+		})
 	}
 
 	opt := &cos.CompleteMultipartUploadOptions{}
@@ -279,6 +280,7 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 			})
 		}
 	}
+	gp.join()
 	log.Debugf("%s success", step1)
 	// 按 PartNumber 排序
 	op := objectParts(opt.Parts)

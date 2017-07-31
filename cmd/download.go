@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -157,10 +156,9 @@ func init() {
 	RootCmd.AddCommand(downloadCmd)
 }
 
-// 下载文件夹
+// 下载目录
 func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir string, maxKeys int) (err error) {
 	next := ""
-	var wg sync.WaitGroup
 	for {
 		opt := &cos.BucketGetOptions{
 			Prefix:  remoteDir,
@@ -179,24 +177,24 @@ func (dw *downloader) downloadDir(ctx context.Context, remoteDir, localDir strin
 			if strings.HasSuffix(rp, "/") {
 				continue
 			}
-			wg.Add(1)
 			atomic.AddInt64(&dw.result.total, 1)
 			size := o.Size
 			lp := getLocalDirPath(remoteDir, rp, localDir)
-			go func(rp, lp string, size int) {
-				defer wg.Done()
+			// 提交到消费者队列
+			grPool.submit(func() {
 				if err = dw.downloadFile(ctx, rp, lp, size); err != nil {
 					atomic.AddInt64(&dw.result.failed, 1)
 				} else {
 					atomic.AddInt64(&dw.result.success, 1)
 				}
-			}(rp, lp, size)
+			})
 		}
 		if next == "" {
 			break
 		}
 	}
-	wg.Wait()
+	// 等待消费完成
+	grPool.join()
 	return
 }
 
@@ -224,11 +222,15 @@ func (dw *downloader) downloadFile(ctx context.Context,
 		log.Debugf("get size of %s success: %d", remotePath, fileSize)
 	}
 	if fileSize <= blockSize {
-		return dw.downloadWhole(ctx, remotePath, localPath)
+		err = dw.downloadWhole(ctx, remotePath, localPath)
+	} else {
+		// 分块并行下载
+		err = dw.downloadBlocks(ctx, remotePath, localPath, blockSize, fileSize)
 	}
-
-	// 分块并行下载
-	return dw.downloadBlocks(ctx, remotePath, localPath, blockSize, fileSize)
+	if !dw.config.isDir {
+		grPool.join()
+	}
+	return
 }
 
 // 下载整个文件，不分块下载
@@ -296,12 +298,14 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 	// 用于保存分块数据
 	dataBlocks := make([]blockData, nblock)
 	ret, cerr := make(chan blockData, nblock), make(chan error, nblock)
+	gp := grPool.clone()
 
 	step0 := fmt.Sprintf("download %s ==> %s with %d blocks", remotePath, localPath, nblock)
 	log.Debugf("%s start...", step0)
 	// 分块下载
 	for i := 0; i < nblock; i++ {
-		go func(n int) {
+		n := i
+		gp.submit(func() {
 			blockPath := fmt.Sprintf("%s.%d", localPathTmp, n)
 			f, err := dw.downloadBlock(ctx, remotePath, blockPath, n, int(bsize))
 			if err != nil {
@@ -315,7 +319,7 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 				path: blockPath,
 				f:    f,
 			}
-		}(i)
+		})
 	}
 	for i := 0; i < nblock; i++ {
 		select {
@@ -325,6 +329,7 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 			return e
 		}
 	}
+	gp.join()
 	// 合并分块
 	if err = dw.mergeBlocks(localPathTmp, dataBlocks); err != nil {
 		return

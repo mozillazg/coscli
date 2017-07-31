@@ -18,9 +18,11 @@ import (
 var log = logrus.New()
 var cfgFile string
 var authTransport http.RoundTripper
+var grPool *goroutinePool
 
 const fileMode = 0644
 const dirMode = 0755
+const poolQueueSize = 1000
 
 var globalConfig = struct {
 	secretID     string
@@ -58,6 +60,7 @@ to quickly create a Cobra application.`,
 		globalConfig.secretKey = viper.GetString("secret_key")
 		globalConfig.bucketName = viper.GetString("bucket_name")
 		globalConfig.timeout = viper.GetInt("timeout")
+		globalConfig.concurrency = viper.GetInt("concurrency")
 		globalConfig.maxKeys = viper.GetInt("max_keys")
 		globalConfig.blockSize = viper.GetInt("block_size")
 		globalConfig.bucketURL = viper.GetString("base_url.bucket")
@@ -82,6 +85,7 @@ to quickly create a Cobra application.`,
 		if globalConfig.verbose {
 			log.Level = logrus.DebugLevel
 		}
+		grPool = newGoroutinePool(globalConfig.concurrency, poolQueueSize)
 	},
 }
 

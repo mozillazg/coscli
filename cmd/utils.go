@@ -8,8 +8,58 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 )
+
+type task struct {
+	doit func()
+}
+
+type goroutinePool struct {
+	maxWorkers int
+	queueSize  int
+	wg         sync.WaitGroup
+	queue      chan task
+}
+
+func newGoroutinePool(maxWorkers, queueSize int) *goroutinePool {
+	p := &goroutinePool{
+		maxWorkers: maxWorkers,
+		queueSize: queueSize,
+		queue:      make(chan task, queueSize),
+	}
+	p.startWorkers()
+	return p
+}
+
+func (p *goroutinePool) clone() *goroutinePool {
+	return newGoroutinePool(p.maxWorkers, p.queueSize)
+}
+
+func (p *goroutinePool) startWorkers() {
+	// TODO: 可以中途停止 pool?
+	for i := 0; i < p.maxWorkers; i++ {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			for t := range p.queue {
+				t.doit()
+			}
+		}()
+	}
+}
+
+func (p *goroutinePool) submit(f func()) {
+	p.queue <- task{
+		doit: f,
+	}
+}
+
+func (p *goroutinePool) join() {
+	close(p.queue)
+	p.wg.Wait()
+}
 
 type ObjectPath struct {
 	bucketURL *url.URL
