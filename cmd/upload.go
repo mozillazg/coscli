@@ -20,6 +20,8 @@ import (
 	"github.com/mozillazg/go-cos"
 	"github.com/spf13/cobra"
 	"github.com/sirupsen/logrus"
+	"github.com/vbauerster/mpb"
+	"github.com/vbauerster/mpb/decor"
 )
 
 type uploader struct {
@@ -37,6 +39,7 @@ type uploader struct {
 		failed  int64
 	}
 	logger *logrus.Entry
+	pb *mpb.Progress
 }
 
 var up = uploader{}
@@ -89,8 +92,12 @@ var uploadCmd = &cobra.Command{
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cf := up.config
-		fmt.Printf("bucketURL: %s\n", cf.bucketURL)
-		fmt.Printf("upload %s ==> %s\n", cf.local, cf.remote)
+		up.logger = log.WithFields(logrus.Fields{
+			"prefix": "upload",
+		})
+		log := up.logger
+		log.Infof("bucketURL: %s", cf.bucketURL)
+		log.Infof("upload %s ==> %s", cf.local, cf.remote)
 		up.client = cos.NewClient(
 			&cos.BaseURL{BucketURL: cf.bucketURL},
 			&http.Client{
@@ -99,13 +106,11 @@ var uploadCmd = &cobra.Command{
 			},
 		)
 		ctx := context.Background()
-		up.logger = log.WithFields(logrus.Fields{
-			"prefix": "upload",
-		})
-		log := up.logger
+		up.pb = mpb.New(mpb.WithWidth(64))
 
 		start := time.Now()
 		err := up.upload(ctx, cf.local, cf.remote, cf.isDir)
+		up.pb.Stop()
 		log.Infof("spend: %d seconds", time.Since(start)/time.Second)
 		log.Infof("total: %d", up.result.total)
 		log.Infof("success: %d", up.result.success)
@@ -128,6 +133,7 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 	log := up.logger
 	errMsg := []string{}
 	lock := sync.Mutex{}
+
 	err = filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -148,9 +154,10 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 		}
 		rp = cleanCosPath(rp)
 		lp := path
+
 		grPool.submit(func(){
 			step := fmt.Sprintf("upload %s -> %s", lp, rp)
-			log.Infof("%s start...", step)
+			log.Debugf("%s start...", step)
 			e := up.uploadFile(ctx, lp, rp, int(info.Size()))
 			if e != nil {
 				atomic.AddInt64(&up.result.failed, 1)
@@ -162,7 +169,7 @@ func (up *uploader) upload(ctx context.Context, localPath, remotePath string, is
 				return
 			}
 			atomic.AddInt64(&up.result.success, 1)
-			log.Infof("%s success", step)
+			log.Debugf("%s success", step)
 		})
 		return err
 	})
@@ -183,24 +190,40 @@ func (up *uploader) uploadFile(ctx context.Context, localPath, remotePath string
 	if err != nil {
 		return err
 	}
+
+	padding := 18
+	bar := up.pb.AddBar(
+		int64(size),
+		mpb.PrependDecorators(
+			decor.StaticName(localPath, 0, 0),
+			countersDecorator(padding),
+		),
+		mpb.AppendDecorators(
+			speedDecorator(),
+			decor.Elapsed(5, decor.DSyncSpace),
+		),
+	)
 	if size <= up.config.blockSize {
-		return up.uploadFileWhole(ctx, f, remotePath, size)
+		return up.uploadFileWhole(ctx, f, remotePath, size, bar)
 	} else {
-		return up.uploadFileBlocks(ctx, f, remotePath, size)
+		return up.uploadFileBlocks(ctx, f, remotePath, size, bar)
 	}
 }
 
-func (up *uploader) uploadFileWhole(ctx context.Context, f *os.File, remotePath string, size int) (err error) {
+func (up *uploader) uploadFileWhole(ctx context.Context, f *os.File,
+remotePath string, size int, bar *mpb.Bar) (err error) {
 	opt := &cos.ObjectPutOptions{
 		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
 			ContentLength: size,
 		},
 	}
-	_, err = up.client.Object.Put(ctx, remotePath, f, opt)
+	reader := bar.ProxyReader(f)
+	_, err = up.client.Object.Put(ctx, remotePath, reader, opt)
 	return err
 }
 
-func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath string, size int) (err error) {
+func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File,
+remotePath string, size int, bar *mpb.Bar) (err error) {
 	fileName := f.Name()
 	log := up.logger
 	step0 := fmt.Sprintf("blocks upload %s -> %s", fileName, remotePath)
@@ -248,12 +271,12 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 			cerr <- err
 			break
 		}
-		block := bytes.NewReader(b)
+		block := bar.ProxyReader(bytes.NewReader(b))
 		n := i
 		gp.submit(func() {
 			step := fmt.Sprintf("upload the %d block of %s -> %s", n, fileName, remotePath)
 			log.Debugf("%s start...", step)
-			etag, err := up.uploadFileBlock(ctx, block, uploadID, n, remotePath)
+			etag, err := up.uploadFileBlock(ctx, block, uploadID, n, remotePath, len(b))
 			if err != nil {
 				log.Errorf("%s error: %s", step, err)
 				cancel()
@@ -301,9 +324,12 @@ func (up *uploader) uploadFileBlocks(ctx context.Context, f *os.File, remotePath
 }
 
 func (up *uploader) uploadFileBlock(ctx context.Context, f io.Reader, uploadID string,
-	partNumber int, remotePath string) (etag string, err error) {
+	partNumber int, remotePath string, size int) (etag string, err error) {
+	opt := &cos.ObjectUploadPartOptions{
+		ContentLength: size,
+	}
 	resp, err := up.client.Object.UploadPart(
-		context.Background(), remotePath, uploadID, partNumber, f, nil,
+		context.Background(), remotePath, uploadID, partNumber, f, opt,
 	)
 	if err != nil {
 		return

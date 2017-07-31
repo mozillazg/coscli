@@ -16,6 +16,8 @@ import (
 	"github.com/mozillazg/go-cos"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/vbauerster/mpb"
+	"github.com/vbauerster/mpb/decor"
 )
 
 type downloader struct {
@@ -34,6 +36,7 @@ type downloader struct {
 	}
 	logger *logrus.Entry
 	err chan error
+	pb *mpb.Progress
 }
 type blockData struct {
 	n    int
@@ -116,8 +119,12 @@ examples:
 		}()
 
 		cf := dw.config
-		fmt.Printf("bucketURL: %s\n", cf.bucketURL)
-		fmt.Printf("download %s ==> %s\n", cf.remote, cf.local)
+		dw.logger = log.WithFields(logrus.Fields{
+			"prefix": "download",
+		})
+		log := dw.logger
+		log.Infof("bucketURL: %s", cf.bucketURL)
+		log.Infof("download %s ==> %s", cf.remote, cf.local)
 		dw.client = cos.NewClient(
 			&cos.BaseURL{BucketURL: cf.bucketURL},
 			&http.Client{
@@ -125,14 +132,13 @@ examples:
 				//Timeout:   time.Second * time.Duration(globalConfig.timeout),
 			},
 		)
-		dw.logger = log.WithFields(logrus.Fields{
-			"prefix": "download",
-		})
-		log := dw.logger
+		dw.pb = mpb.New(mpb.WithWidth(64))
 		ctx := context.Background()
 
 		start := time.Now()
 		dw.download(ctx, cf.remote, cf.local, globalConfig.maxKeys)
+		dw.pb.Stop()
+
 		log.Infof("spend: %d seconds", time.Since(start)/time.Second)
 		log.Infof("total: %d", dw.result.total)
 		log.Infof("success: %d", dw.result.success)
@@ -198,7 +204,7 @@ func (dw *downloader) download(ctx context.Context, remotePath, localPath string
 			if dw.config.isDir {
 				rbase = remotePath
 			}
-			//lp := getLocalDirPath(remotePath, rp, localPath)
+
 			// 提交到消费者队列
 			grPool.submit(func() {
 				if err = dw.downloadFile(ctx, rbase, rp, localPath, size); err != nil {
@@ -230,7 +236,7 @@ func (dw *downloader) downloadFile(ctx context.Context,
 		log.Error(err)
 		return err
 	}
-	log.Infof("download %s ==> %s start...", remotePath, localPath)
+	log.Debugf("download %s ==> %s start...", remotePath, localPath)
 	blockSize := dw.config.blockSize
 
 	// 获取文件大小
@@ -270,12 +276,25 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 
 	step0 := fmt.Sprintf("download %s ==> %s with %d blocks", remotePath, localPath, nblock)
 	log.Debugf("%s start...", step0)
+
+	padding := 18
+	bar := dw.pb.AddBar(int64(fileSize),
+		mpb.PrependDecorators(
+			decor.StaticName(remotePath, 0, 0),
+			countersDecorator(padding),
+		),
+		mpb.AppendDecorators(
+			speedDecorator(),
+			decor.Elapsed(5, decor.DSyncSpace),
+		),
+	)
+
 	// 分块下载
 	for i := 0; i < nblock; i++ {
 		n := i
 		gp.submit(func() {
 			blockPath := fmt.Sprintf("%s.%d", localPathTmp, n)
-			err := dw.downloadBlock(ctx, remotePath, blockPath, n, blockSize)
+			_, err := dw.downloadBlock(ctx, remotePath, blockPath, n, blockSize, bar)
 			if err != nil {
 				log.Errorf("download %s failed: %s", remotePath, err)
 				cancel()
@@ -309,7 +328,7 @@ func (dw *downloader) downloadBlocks(ctx context.Context, remotePath, localPath 
 		return err
 	}
 	log.Debugf("%s success", step2)
-	log.Infof("%s success", step0)
+	log.Debugf("%s success", step0)
 	return
 }
 
@@ -351,7 +370,7 @@ func (dw *downloader) mergeBlocks(localPathTmp string, dataBlocks []blockData) e
 
 // 下载文件的某块数据
 func (dw *downloader) downloadBlock(ctx context.Context,
-	remotePath, localPath string, n, bsize int) (err error) {
+	remotePath, localPath string, n, bsize int, bar *mpb.Bar) (total int64, err error) {
 	client := dw.client
 	log := dw.logger
 	step := fmt.Sprintf("download the %d block of %s ==> %s", n, remotePath, localPath)
@@ -366,7 +385,7 @@ func (dw *downloader) downloadBlock(ctx context.Context,
 		log.Errorf("%s failed: %s", step, err)
 		return
 	}
-	total := resp.ContentLength
+	total = resp.ContentLength
 	defer resp.Body.Close()
 
 	// 保存 body 内容
@@ -379,7 +398,8 @@ func (dw *downloader) downloadBlock(ctx context.Context,
 		file.Sync()
 		file.Close()
 	}()
-	written, err := io.Copy(file, resp.Body)
+	writer := bar.ProxyReader(resp.Body)
+	written, err := io.Copy(file, writer)
 	if err != nil {
 		log.Errorf("%s failed: %s", step, err)
 		return
@@ -433,8 +453,12 @@ func getLocalFilePath(remoteBase, remotePath, localPath string) string {
 	if localPath == "" {
 		localPath = getFileName(remotePath)
 	}
-	// 除去 remoteBase 外的文件路径
-	remotePath = strings.SplitN(remotePath, remoteBase, 2)[1]
+
+	if remoteBase == "" {
+		remotePath = getFileName(remotePath)
+	} else { // 除去 remoteBase 外的文件路径
+		remotePath = strings.SplitN(remotePath, remoteBase, 2)[1]
+	}
 
 	// 按原有目录结构保存到本地
 	if isDir(localPath) || strings.HasSuffix(localPath, "/") {

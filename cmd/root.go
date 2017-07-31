@@ -78,9 +78,6 @@ to quickly create a Cobra application.`,
 
 		formatter := new(prefixed.TextFormatter)
 		formatter.FullTimestamp = true
-		//formatter.SetColorScheme(&prefixed.ColorScheme{
-		//	PrefixStyle:    "blue+b",
-		//})
 		log.Formatter = formatter
 		if globalConfig.verbose {
 			log.Level = logrus.DebugLevel
