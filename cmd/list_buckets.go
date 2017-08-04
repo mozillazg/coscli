@@ -11,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var bucketListCmd = &cobra.Command{
-	Use:     "bucketList",
-	Aliases: []string{"bl"},
+var listBucketsCmd = &cobra.Command{
+	Use:     "list-buckets",
+	Aliases: []string{"lb"},
 	Short:   "List buckets",
 	Run: func(cmd *cobra.Command, args []string) {
 		err := listBuckets()
@@ -24,7 +24,7 @@ var bucketListCmd = &cobra.Command{
 }
 
 func init() {
-	RootCmd.AddCommand(bucketListCmd)
+	RootCmd.AddCommand(listBucketsCmd)
 }
 
 func listBuckets() error {
